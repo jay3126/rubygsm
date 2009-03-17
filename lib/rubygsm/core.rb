@@ -55,10 +55,18 @@ class Modem
 				# tried all ports, nothing worked
 				raise AutoDetectError
 			end
-			
-		else
+		
+		# if the port was a port number or file
+		# name, initialize a serialport object
+		elsif port.is_a?(String) or port.is_a?(Fixnum)
 			@device = SerialPort.new(port, baud, 8, 1, SerialPort::NONE)
 			@port = port
+			
+		# otherwise, we'll assume that the object passed
+		# was an object ready to quack like a serial modem
+		else
+			@device = port
+			@port = nil
 		end
 		
 		@cmd_delay = cmd_delay
@@ -374,7 +382,7 @@ class Modem
 		while true do
 			buf = read(term)
 			buffer.push(buf)
-		
+			
 			# some errors contain useful error codes,
 			# so raise a proper error with a description
 			if m = buf.match(/^\+(CM[ES]) ERROR: (\d+)$/)

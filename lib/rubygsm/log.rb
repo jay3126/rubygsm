@@ -16,7 +16,6 @@ class Modem
 		:error   => 1 }
 	
 	def log_init
-		
 		fn_port = File.basename(@port)
 		fn_time = Time.now.strftime("%Y-%m-%d.%H-%M-%S")
 		
@@ -35,6 +34,12 @@ class Modem
 	end
 	
 	def log(msg, level=:debug)
+		
+		# abort if logging isn't
+		# enabled yet (or ever?)
+		return false if\
+			@log.nil?
+		
 		ind = "  " * (@log_indents[Thread.current] or 0)
 		
 		# create a 
