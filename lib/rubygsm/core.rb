@@ -18,7 +18,6 @@ module Gsm
 class Modem
 	include Timeout
 	
-	
 	attr_accessor :verbosity, :read_timeout
 	attr_reader :device, :port
 	
@@ -66,6 +65,7 @@ class Modem
 		@verbosity = verbosity
 		@read_timeout = 10
 		@locked_to = false
+    @encoding = nil
 		
 		# keep track of the depth which each
 		# thread is indented in the log
@@ -94,8 +94,6 @@ class Modem
 #COMPAT		command "AT+WIND=0" # no notifications
 		command "AT+CMGF=1" # switch to text mode
 	end
-	
-	
 	
 	
 	private
@@ -699,6 +697,9 @@ class Modem
 			# the text prompt or an error message
 			command "AT+CMGS=\"#{to}\"", ["\r\n", "> "]
 			
+      # encode the message?
+      msg = encode(msg)
+      
 			begin
 				# send the sms, and wait until
 				# it is accepted or rejected
@@ -724,8 +725,27 @@ class Modem
 		# then the message was sent
 		return true
 	end
-	
-	
+
+  # Encodes the message using the set encoding or, if no encoding is specified
+  # returns the msg unchange
+  def encode(msg)
+    if (@encoding == :ascii) 
+      # TODO, use lucky sneaks here
+      msg
+    elsif (@encoding == :utf8) 
+      # Unpacking and repacking supposedly cleans out bad (non-UTF-8) stuff
+      utf8 = msg.unpack("U*");
+      packed = utf8.pack("U*");
+      packed    
+    elsif (@encoding == :ucs2)
+      ucs2 = Iconv.iconv("UCS-2", "UTF-8", msg).first
+      ucs2 = ucs2.unpack("H*").join
+      ucs2    
+    else
+      msg
+    end
+  end
+  	
 	# call-seq:
 	#   receive(callback_method, interval=5, join_thread=false)
 	#
@@ -801,6 +821,30 @@ class Modem
 		@thr.join if join_thread
 	end
   
+  def encodings?
+    command "AT+CSCS=?"
+  end
+
+  def encoding
+    @encoding
+  end
+	
+  def encoding=(enc)
+    @encoding = enc
+    case enc
+      when :ascii
+       command "AT+CSCS=\"ASCII\""
+      when :utf8
+       command "AT+CSCS=\"UTF8\""
+      when :ucs2
+       command "AT+CSCS=\"UCS2\""
+      when :gsm
+       command "AT+CSCS=\"GSM\""
+      when :iso88591
+       command "AT+CSCS=\"8859-1\""
+    end
+  end    
+
   def select_default_mailbox
     # Eventually we will select the first mailbox as the default
     result = command("AT+CPMS=?")
