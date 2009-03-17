@@ -18,7 +18,7 @@ module Gsm
 class Modem
 	include Timeout
 	
-	attr_accessor :verbosity, :read_timeout
+	attr_accessor :verbosity, :read_timeout, :keep_inbox_empty
 	attr_reader :device, :port
 	
 	# call-seq:
@@ -76,23 +76,25 @@ class Modem
 		# the last part is delivered
 		@multipart = {}
 		
-		# (re-) open the full log file
-		@log = File.new "rubygsm.log", "w"
-		
-		# initialization message (yes, it's underlined)
-		msg = "RubyGSM Initialized at: #{Time.now}"
-		log msg + "\n" + ("=" * msg.length), :file
+		# start logging to file
+		log_init
 		
 		# to store incoming messages
 		# until they're dealt with by
 		# someone else, like a commander
 		@incoming = []
 		
-		# initialize the modem
-		command "ATE0"      # echo off
-#COMPAT		command "AT+CMEE=1" # useful errors
-#COMPAT		command "AT+WIND=0" # no notifications
-		command "AT+CMGF=1" # switch to text mode
+		# initialize the modem; rubygsm is (supposed to be) robust enough to function
+		# without these working (hence the "try_"), but they make different modems more
+		# consistant, and the logs a bit more sane.
+		try_command "ATE0"      # echo off
+		try_command "AT+CMEE=1" # useful errors
+		try_command "AT+WIND=0" # no notifications
+		
+		# PDU mode isn't supported right now (although
+		# it should be, because it's quite simple), so
+		# switching to text mode (mode 1) is MANDATORY
+		command "AT+CMGF=1"
 	end
 	
 	
@@ -100,7 +102,9 @@ class Modem
 	
 	
 	INCOMING_FMT = "%y/%m/%d,%H:%M:%S%Z" #:nodoc:
-	
+	CMGL_STATUS = "REC UNREAD" #:nodoc:
+
+
 	def parse_incoming_timestamp(ts)
 		# extract the weirdo quarter-hour timezone,
 		# convert it into a regular hourly offset
@@ -127,17 +131,17 @@ class Modem
 				next
 			end
 			
-			# since this line IS a CMT string (an incomming
+			# since this line IS a CMT string (an incoming
 			# SMS), parse it and store it to deal with later
 			unless m = lines[n].match(/^\+CMT: "(.+?)",.*?,"(.+?)".*?$/)
-				err = "Couldn't parse CMT data: #{buf}"
+				err = "Couldn't parse CMT data: #{lines[n]}"
 				raise RuntimeError.new(err)
 			end
 			
 			# extract the meta-info from the CMT line,
 			# and the message from the FOLLOWING line
 			from, timestamp = *m.captures
-			msg = lines[n+1].strip
+			msg_text = lines[n+1].strip
 			
 			# notify the network that we accepted
 			# the incoming message (for read receipt)
@@ -155,12 +159,13 @@ class Modem
 				log "Receipt acknowledgement (CNMA) was rejected"
 			end
 			
-			# we might abort if this is
+			# we might abort if this part of a
+			# multi-part message, but not the last
 			catch :skip_processing do
 			
 				# multi-part messages begin with ASCII char 130
-				if (msg[0] == 130) and (msg[1].chr == "@")
-					text = msg[7,999]
+				if (msg_text[0] == 130) and (msg_text[1].chr == "@")
+					text = msg_text[7,999]
 					
 					# ensure we have a place for the incoming
 					# message part to live as they are delivered
@@ -176,24 +181,25 @@ class Modem
 					
 					# abort if this is not the last part
 					throw :skip_processing\
-						unless (msg[5] == 173)
+						unless (msg_text[5] == 173)
 					
 					# last part, so switch out the received
 					# part with the whole message, to be processed
 					# below (the sender and timestamp are the same
 					# for all parts, so no change needed there)
-					msg = @multipart[from].join("")
+					msg_text = @multipart[from].join("")
 					@multipart.delete(from)
 				end
 				
 				# just in case it wasn't already obvious...
-				log "Received message from #{from}: #{msg}"
+				log "Received message from #{from}: #{msg_text.inspect}"
 			
 				# store the incoming data to be picked up
 				# from the attr_accessor as a tuple (this
 				# is kind of ghetto, and WILL change later)
 				sent = parse_incoming_timestamp(timestamp)
-				@incoming.push Gsm::Incoming.new(self, from, sent, msg)
+				msg = Gsm::Incoming.new(self, from, sent, msg_text)
+				@incoming.push(msg)
 			end
 			
 			# drop the two CMT lines (meta-info and message),
@@ -311,7 +317,7 @@ class Modem
 		# then automatically re-try the command after
 		# a short delay. for others, propagate
 		rescue Error => err
-			log "Rescued: #{err.desc}"
+			log "Rescued (in #command): #{err.desc}"
 			
 			if (err.type == "CMS") and (err.code == 515)
 				sleep 2
@@ -320,6 +326,24 @@ class Modem
 			
 			log_decr
 			raise
+		end
+	end
+	
+	
+	# proxy a single command to #command, but catch any
+	# Gsm::Error exceptions that are raised, and return
+	# nil. This should be used to issue commands which
+	# aren't vital - of which there are VERY FEW.
+	def try_command(cmd, *args)
+		begin
+			log_incr "Trying Command: #{cmd}"
+			out = command(cmd, *args)
+			log_decr "=#{out}"
+			return out
+			
+		rescue Error => err
+			log_then_decr "Rescued (in #try_command): #{err.desc}"
+			return nil
 		end
 	end
 	
@@ -644,15 +668,38 @@ class Modem
 	#   send_sms(message) => true or false
 	#   send_sms(recipient, text) => true or false
 	#
+	# Sends an SMS message via _send_sms!_, but traps
+	# any exceptions raised, and returns false instead.
+	# Use this when you don't really care if the message
+	# was sent, which is... never.
+	def send_sms(*args)
+		begin
+			send_sms!(*args)
+			return true
+		
+		# something went wrong
+		rescue Gsm::Error
+			return false
+		end
+	end
+	
+	
+	# call-seq:
+	#   send_sms!(message) => true or raises Gsm::Error
+	#   send_sms!(receipt, text) => true or raises Gsm::Error
+	#
 	# Sends an SMS message, and returns true if the network
 	# accepted it for delivery. We currently can't handle read
-	# receipts, so have no way of confirming delivery.
+	# receipts, so have no way of confirming delivery. If the
+	# device or network rejects the message, a Gsm::Error is
+	# raised containing (hopefully) information about what went
+	# wrong.
 	#
 	# Note: the recipient is passed directly to the modem, which
 	# in turn passes it straight to the SMSC (sms message center).
-	# for maximum compatibility, use phone numbers in international
+	# For maximum compatibility, use phone numbers in international
 	# format, including the *plus* and *country code*.
-	def send_sms(*args)
+	def send_sms!(*args)
 		
 		# extract values from Outgoing object.
 		# for now, this does not offer anything
@@ -697,7 +744,7 @@ class Modem
 			# the text prompt or an error message
 			command "AT+CMGS=\"#{to}\"", ["\r\n", "> "]
 			
-      # encode the message?
+      # encode the message using the setup encoding or the default
       msg = encode(msg)
       
 			begin
@@ -713,12 +760,16 @@ class Modem
 			# an escpae, to... escape
 			rescue Exception, Timeout::Error => err
 				log "Rescued #{err.desc}"
-				return false
-				#write 27.chr
-				#wait
+				write 27.chr
+				
+				# allow the error to propagate,
+				# so the application can catch
+				# it for more useful info
+				raise
+				
+			ensure
+				log_decr
 			end
-			
-			log_decr
 		end
 				
 		# if no error was raised,
@@ -751,7 +802,9 @@ class Modem
 	#
 	# Starts a new thread, which polls the device every _interval_
 	# seconds to capture incoming SMS and call _callback_method_
-	# for each.
+	# for each, and polls the device's internal storage for incoming
+	# SMS that we weren't notified about (some modems don't support
+	# that).
 	#
 	#   class Receiver
 	#     def incoming(msg)
@@ -780,15 +833,25 @@ class Modem
 			# keep on receiving forever
 			while true
 				command "AT"
-        check_for_inbox_messages
-        
-				# enable new message notification mode
-				# every ten intevals, in case the
+
+				# enable new message notification mode every ten intevals, in case the
 				# modem "forgets" (power cycle, etc)
 				if (@polled % 10) == 0
-#COMPAT					command "AT+CNMI=2,2,0,0,0"
+					try_command("AT+CNMI=2,2,0,0,0")
 				end
+	
+        # check for messages in the default mailbox (wether read or not)
+        # read them and then delete them 			
+        if (@keep_inbox_empty)
+          fetch_and_delete_stored_messages        
+        end
 				
+				# check for new messages lurking in the device's
+				# memory (in case we missed them (yes, it happens))
+				if (@polled % 4) == 0
+					fetch_stored_messages
+				end
+        
 				# if there are any new incoming messages,
 				# iterate, and pass each to the receiver
 				# in the same format that they were built
@@ -820,6 +883,7 @@ class Modem
 		# threaded (like debugging handsets)
 		@thr.join if join_thread
 	end
+	
   
   def encodings?
     command "AT+CSCS=?"
@@ -857,8 +921,8 @@ class Modem
     nil
   end
   
-  # Could accomplish this with a CMGL=\"REC UNREAD\" too
-  def check_for_inbox_messages
+  def fetch_and_delete_stored_messages
+    # If there is no way to select a default mailbox we can't continue
     return unless select_default_mailbox
     
     # Try to read the first message from the box (should this be 0?)
@@ -891,5 +955,56 @@ class Modem
     @incoming.push Gsm::Incoming.new(self, from, sent, msg)
   end
   
+	def fetch_stored_messages
+		
+		# fetch all/unread (see constant) messages
+		lines = command('AT+CMGL="%s"' % CMGL_STATUS)
+		n = 0
+		
+		# if the last line returned is OK
+		# (and it SHOULD BE), remove it
+		lines.pop if lines[-1] == "OK"
+		
+		# keep on iterating the data we received,
+		# until there's none left. if there were no
+		# stored messages waiting, this done nothing!
+  	while n < lines.length
+  		
+  		# attempt to parse the CMGL line (we're skipping
+  		# two lines at a time in this loop, so we will
+  		# always land at a CMGL line here) - they look like:
+			#   +CMGL: 0,"REC READ","+13364130840",,"09/03/04,21:59:31-20"
+			unless m = lines[n].match(/^\+CMGL: (\d+),"(.+?)","(.+?)",*?,"(.+?)".*?$/)
+				err = "Couldn't parse CMGL data: #{lines[n]}"
+				raise RuntimeError.new(err)
+			end
+			
+			# find the index of the next
+			# CMGL line, or the end
+			nn = n+1
+			nn += 1 until\
+				nn >= lines.length ||\
+				lines[nn][0,6] == "+CMGL:"
+			
+			# extract the meta-info from the CMGL line, and the
+			# message text from the lines between _n_ and _nn_
+			index, status, from, timestamp = *m.captures
+			msg_text = lines[(n+1)..(nn-1)].join("\n").strip
+  		
+			# log the incoming message
+			log "Fetched stored message from #{from}: #{msg_text.inspect}"
+  		
+			# store the incoming data to be picked up
+			# from the attr_accessor as a tuple (this
+			# is kind of ghetto, and WILL change later)
+			sent = parse_incoming_timestamp(timestamp)
+			msg = Gsm::Incoming.new(self, from, sent, msg_text)
+			@incoming.push(msg)
+  		
+  		# skip over the messge line(s),
+  		# on to the next CMGL line
+  		n = nn
+  	end
+	end
 end # Modem
 end # Gsm
