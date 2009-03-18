@@ -18,7 +18,7 @@ module Gsm
 class Modem
 	include Timeout
 	
-	attr_accessor :verbosity, :read_timeout, :keep_inbox_empty
+	attr_accessor :verbosity, :read_timeout, :keep_inbox_empty, :keep_alive, :read_unread_messages
 	attr_reader :device, :port
 	
 	# call-seq:
@@ -845,19 +845,20 @@ class Modem
 				# enable new message notification mode every ten intevals, in case the
 				# modem "forgets" (power cycle, etc)
 				if (@polled % 10) == 0
-					try_command("AT+CNMI=2,2,0,0,0")
+					try_command("AT+CNMI=2,2,0,0,0") if @keep_alive
 				end
 	
         # check for messages in the default mailbox (wether read or not)
         # read them and then delete them 			
         if (@keep_inbox_empty)
+          log "Keeping the inbox empty========================================"
           fetch_and_delete_stored_messages        
         end
 				
 				# check for new messages lurking in the device's
 				# memory (in case we missed them (yes, it happens))
-				if (@polled % 4) == 0
-					fetch_stored_messages
+				if (@read_unread_messages && (@polled % 4) == 0)
+					fetch_unread_messages
 				end
         
 				# if there are any new incoming messages,
@@ -933,7 +934,7 @@ class Modem
     # If there is no way to select a default mailbox we can't continue
     return unless select_default_mailbox
     
-    # Try to read the first message from the box (should this be 0?)
+    # Try to read the first message from the box
     begin
       out = command("AT+CMGR=1")
     rescue
@@ -963,7 +964,7 @@ class Modem
     @incoming.push Gsm::Incoming.new(self, from, sent, msg)
   end
   
-	def fetch_stored_messages
+	def fetch_unread_messages
 		
 		# fetch all/unread (see constant) messages
 		lines = command('AT+CMGL="%s"' % CMGL_STATUS)
