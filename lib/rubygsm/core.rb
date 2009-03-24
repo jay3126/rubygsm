@@ -289,9 +289,9 @@ class Modem
 	def command(cmd, resp_term=nil, write_term="\r")
 		begin
 			out = ""
-			log_incr "Command: #{cmd}"
 			
 			exclusive do
+  			log_incr "Command: #{cmd}"
 				write(cmd + write_term)
 				out = wait(resp_term)
 			end
@@ -840,32 +840,7 @@ class Modem
 			
 			# keep on receiving forever
 			while true
-				command "AT"
-
-        # check for messages in the default mailbox (wether read or not)
-        # read them and then delete them 			
-        fetch_and_delete_stored_messages        
-        
-				# if there are any new incoming messages,
-				# iterate, and pass each to the receiver
-				# in the same format that they were built
-				# back in _parse_incoming_sms!_
-				unless @incoming.empty?
-					@incoming.each do |msg|
-						begin
-							callback.call(msg)
-							
-						rescue StandardError => err
-							log "Error in callback: #{err}"
-						end
-					end
-					
-					# we have dealt with all of the pending
-					# messages. todo: this is a ridiculous
-					# race condition, and i fail at ruby
-					@incoming.clear
-				end
-				
+        process(callback)				
 				# re-poll every
 				# five seconds
 				sleep(interval)
@@ -877,6 +852,34 @@ class Modem
 		# threaded (like debugging handsets)
 		@thr.join if join_thread
 	end
+  
+  def process(callback)
+    command "AT"
+
+    # check for messages in the default mailbox (wether read or not)
+    # read them and then delete them 			
+    fetch_and_delete_stored_messages        
+    
+    # if there are any new incoming messages,
+    # iterate, and pass each to the receiver
+    # in the same format that they were built
+    # back in _parse_incoming_sms!_
+    unless @incoming.empty?
+      @incoming.each do |msg|
+        begin
+          callback.call(msg)
+          
+        rescue StandardError => err
+          log "Error in callback: #{err}"
+        end
+      end
+      
+      # we have dealt with all of the pending
+      # messages. todo: this is a ridiculous
+      # race condition, and i fail at ruby
+      @incoming.clear
+    end
+  end
 	
   
   def encodings?
