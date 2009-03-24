@@ -20,7 +20,7 @@ class Modem
 		fn_time = Time.now.strftime("%Y-%m-%d.%H-%M-%S")
 		
 		# (re-) open the full log file
-		filename = "rubygsm.#{fn_port}.#{fn_time}"
+		filename = "rubygsm.log"
 		@log = File.new filename, "w"
 		
 		# dump some useful information

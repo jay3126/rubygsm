@@ -842,24 +842,9 @@ class Modem
 			while true
 				command "AT"
 
-				# enable new message notification mode every ten intevals, in case the
-				# modem "forgets" (power cycle, etc)
-				if (@polled % 10) == 0
-					try_command("AT+CNMI=2,2,0,0,0") if @keep_alive
-				end
-	
         # check for messages in the default mailbox (wether read or not)
         # read them and then delete them 			
-        if (@keep_inbox_empty)
-          log "Keeping the inbox empty========================================"
-          fetch_and_delete_stored_messages        
-        end
-				
-				# check for new messages lurking in the device's
-				# memory (in case we missed them (yes, it happens))
-				if (@read_unread_messages && (@polled % 4) == 0)
-					fetch_unread_messages
-				end
+        fetch_and_delete_stored_messages        
         
 				# if there are any new incoming messages,
 				# iterate, and pass each to the receiver

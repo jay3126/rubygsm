@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
 	s.name     = "rubygsm"
-	s.version  = "0.5.2"
+	s.version  = "0.5.3"
 	s.date     = "2009-03-17"
 	s.summary  = "Send and receive SMS with a GSM modem"
 	s.email    = "adam.mckaig@gmail.com"
